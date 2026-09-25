@@ -1,0 +1,36 @@
+name: workout_tracker
+description: A 100% offline workout routine tracker.
+publish_to: 'none'
+version: 2.1.0+3
+
+environment:
+  # share_plus 13.x requires Dart 3.10+, so claiming an older floor here only
+  # produces a confusing version-solving failure instead of a clear one.
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  sqflite: ^2.4.3
+  path: ^1.9.0
+  path_provider: ^2.1.6
+  fl_chart: ^1.0.0
+  share_plus: ^13.0.0
+  cross_file: ^0.3.4
+  provider: ^6.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon/icon.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/icon/icon.png"
