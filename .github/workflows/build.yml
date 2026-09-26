@@ -37,16 +37,50 @@ jobs:
           mkdir -p /tmp/keep
           cp -r lib /tmp/keep/lib
           cp pubspec.yaml /tmp/keep/pubspec.yaml
-          flutter create --platforms=android --project-name workout_tracker --org com.aditya .
+          # --org MUST stay com.example: it sets the applicationId, and the
+          # phone already has com.example.workout_tracker installed from the
+          # local `flutter create workout_tracker` build. Change this and
+          # Android installs a second, empty app instead of updating the
+          # existing one — which is exactly what went wrong the first time.
+          flutter create --platforms=android --project-name workout_tracker --org com.example .
           rm -rf lib pubspec.yaml
           cp -r /tmp/keep/lib lib
           cp /tmp/keep/pubspec.yaml pubspec.yaml
 
-      - name: Set the home-screen name
+      # Sets the launcher name and hard-strips storage permissions. The file
+      # picker only ever opens a document through the Storage Access Framework,
+      # which needs no permission at all — but plugins commonly declare legacy
+      # storage permissions anyway, and manifest merging would pull them into
+      # this app. tools:node="remove" deletes them from the merged result, so
+      # the app stays at zero permissions no matter what a dependency asks for.
+      - name: Patch the AndroidManifest
         run: |
-          sed -i 's/android:label="workout_tracker"/android:label="Workout Tracker"/' \
-            android/app/src/main/AndroidManifest.xml
-          grep -n 'android:label' android/app/src/main/AndroidManifest.xml
+          python3 - <<'PYEOF'
+          import re, pathlib
+          p = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          s = p.read_text()
+
+          if 'xmlns:tools' not in s:
+              s = s.replace('<manifest ',
+                            '<manifest xmlns:tools="http://schemas.android.com/tools" ', 1)
+
+          s = re.sub(r'android:label="[^"]*"', 'android:label="Workout Tracker"', s, count=1)
+
+          strip = [
+              'READ_EXTERNAL_STORAGE', 'WRITE_EXTERNAL_STORAGE',
+              'MANAGE_EXTERNAL_STORAGE', 'READ_MEDIA_IMAGES',
+              'READ_MEDIA_VIDEO', 'READ_MEDIA_AUDIO',
+              'READ_MEDIA_VISUAL_USER_SELECTED',
+          ]
+          block = '\n'.join(
+              f'    <uses-permission android:name="android.permission.{n}" tools:node="remove" />'
+              for n in strip)
+
+          m = re.search(r'<manifest[^>]*>', s)
+          s = s[:m.end()] + '\n' + block + s[m.end():]
+          p.write_text(s)
+          print(s[:1400])
+          PYEOF
 
       - name: Fetch packages
         run: flutter pub get
@@ -86,6 +120,18 @@ jobs:
             build/app/outputs/flutter-apk/app-release.apk
           echo "--- signature on the APK you will install ---"
           "$APKSIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk
+
+      # The build log is the receipt: it shows the package id the phone will
+      # match against, and every permission that survived the merge.
+      - name: Report package id and permissions
+        run: |
+          set -euo pipefail
+          AAPT=$(find "$ANDROID_SDK_ROOT/build-tools" -name aapt2 | sort -V | tail -1)
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          echo "=== package (must be com.example.workout_tracker to update your app) ==="
+          "$AAPT" dump packagename "$APK"
+          echo "=== permissions (expected: none at all) ==="
+          "$AAPT" dump permissions "$APK" | grep -i "uses-permission" || echo "(no permissions requested)"
 
       - name: Rename for download
         run: |
