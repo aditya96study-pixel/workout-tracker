@@ -7,6 +7,7 @@ import '../models/routine.dart';
 import '../models/week.dart';
 import '../models/workout_log.dart';
 import '../services/app_dates.dart';
+import '../services/history_import.dart';
 
 /// Single source of truth for all local persistence. Everything in this app
 /// lives in one SQLite file on-device (`workout_tracker.db`) — nothing ever
@@ -1105,6 +1106,118 @@ class DBHelper {
     final db = await database;
     await db.insert('settings', {'key': key, 'value': value},
         conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  // ---------------------------------------------------------------------
+  // History import
+  // ---------------------------------------------------------------------
+
+  /// Writes parsed history in as completed sessions.
+  ///
+  /// Imported sessions carry no `routine_day_id`: they're a record of what was
+  /// done, not something tied to a day of the routine you happen to be running
+  /// now. Everything history and the charts need — exercise name, tracking
+  /// type, day name — is already denormalised onto the rows themselves, so
+  /// they read correctly without it.
+  ///
+  /// A date+day that already has a completed workout is skipped rather than
+  /// duplicated, which makes importing the same file twice a no-op.
+  Future<HistoryImportResult> importHistory(List<ImportedSession> incoming) async {
+    final db = await database;
+
+    final existingRows = await db.rawQuery(
+        "SELECT date, day_name FROM sessions WHERE status = 'completed'");
+    final existing = {
+      for (final r in existingRows) '${r['date']}|${r['day_name']}',
+    };
+
+    final toInsert = <ImportedSession>[];
+    final skipped = <String>[];
+    for (final s in incoming) {
+      final key = '${s.date}|${s.dayName}';
+      if (existing.contains(key)) {
+        skipped.add('${s.date} (${s.dayName})');
+      } else {
+        existing.add(key); // guards duplicates inside the file itself
+        toInsert.add(s);
+      }
+    }
+
+    // Week rows are created before the transaction opens: they read the active
+    // routine, and a nested read through this class inside a sqflite
+    // transaction deadlocks.
+    for (final weekStart in {for (final s in toInsert) weekStartOfYmd(s.date)}) {
+      await _ensureWeekForImport(weekStart);
+    }
+
+    var sets = 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.transaction((txn) async {
+      for (final s in toInsert) {
+        final sessionId = await txn.insert('sessions', {
+          'date': s.date,
+          'week_start': weekStartOfYmd(s.date),
+          'routine_day_id': null,
+          'day_name': s.dayName,
+          'routine_name': s.routineName,
+          'status': SessionStatus.completed.dbValue,
+          'created_at': now,
+          'completed_at': now,
+          'auto_completed': 0,
+        });
+        for (final e in s.sets) {
+          await txn.insert('set_logs', {
+            'session_id': sessionId,
+            'exercise_def_id': null,
+            'exercise_name': e.exerciseName,
+            'type': e.type.dbValue,
+            'set_index': e.setIndex,
+            'checked': 1,
+            'weight_kg': e.weightKg,
+            'reps': e.reps,
+            'hold_seconds': e.holdSeconds,
+            'cardio_seconds': e.cardioSeconds,
+            'cardio_distance_km': e.cardioDistanceKm,
+            'prefilled': 0,
+            'timestamp': now,
+          });
+          sets++;
+        }
+      }
+    });
+
+    return HistoryImportResult(
+      sessionsImported: toInsert.length,
+      setsImported: sets,
+      skipped: skipped,
+    );
+  }
+
+  /// A week row for imported history. Past weeks are recorded closed with an
+  /// empty plan — there is no honest way to say what was "planned" months ago,
+  /// and the History tab says so rather than inventing one. The current week
+  /// goes through the normal path so it keeps its live plan.
+  Future<void> _ensureWeekForImport(String weekStart) async {
+    final db = await database;
+    if (weekStart == currentWeekStart()) {
+      await ensureWeek(weekStart);
+      return;
+    }
+    final existing = await getWeek(weekStart);
+    if (existing != null) return;
+    await db.insert(
+      'weeks',
+      {
+        'week_start': weekStart,
+        'routine_id': null,
+        'routine_name': 'Imported',
+        'plan_json': '[]',
+        'status': 'closed',
+        'closed_at': DateTime.now().millisecondsSinceEpoch,
+        'auto_closed': 1,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
   }
 
   // ---------------------------------------------------------------------

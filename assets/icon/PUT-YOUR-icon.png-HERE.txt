@@ -1,0 +1,8 @@
+Your pubspec.yaml is already set up to generate launcher icons from
+assets/icon/icon.png.
+
+Copy that file here from C:\dev\workout_tracker\assets\icon\icon.png and the
+build will pick it up automatically. Without it the build still succeeds — the
+app just ships with Flutter's default icon.
+
+You can delete this text file once icon.png is in place.

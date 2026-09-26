@@ -112,6 +112,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     await _reload();
   }
 
+  /// History was written in from a file — every screen's data is now stale.
+  Future<void> onDataImported() async {
+    revision++;
+    await _reload();
+  }
+
   Future<void> completeWeek(String weekStart) async {
     await DBHelper.instance.closeWeek(weekStart);
     revision++;

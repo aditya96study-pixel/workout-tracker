@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../db/db_helper.dart';
 import '../services/import_export.dart';
+import 'import_history_screen.dart';
 import '../theme/theme_provider.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -117,6 +118,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.chevron_right),
                   onTap: _exporting ? null : _export,
+                ),
+                const Divider(height: 1, indent: 16, endIndent: 16),
+                ListTile(
+                  leading: const Icon(Icons.download_outlined),
+                  title: const Text('Import history'),
+                  subtitle: const Text(
+                      'Restore a backup, or bring in older workouts from a CSV'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => const ImportHistoryScreen(),
+                  )),
                 ),
               ],
             ),
