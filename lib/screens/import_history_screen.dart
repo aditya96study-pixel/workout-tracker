@@ -78,7 +78,19 @@ class _ImportHistoryScreenState extends State<ImportHistoryScreen> {
     if (parsed == null) return;
     setState(() => _busy = true);
 
-    final result = await DBHelper.instance.importHistory(parsed.sessions);
+    final HistoryImportResult result;
+    try {
+      result = await DBHelper.instance.importHistory(parsed.sessions);
+    } catch (e) {
+      // Without this the button stayed greyed out forever with no message.
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = 'Import failed, nothing was saved: $e';
+        });
+      }
+      return;
+    }
     if (!mounted) return;
     await context.read<AppState>().onDataImported();
     if (!mounted) return;

@@ -172,7 +172,7 @@ class _RoutineEditorScreenState extends State<RoutineEditorScreen> {
                 : ReorderableListView.builder(
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 90),
                     itemCount: _exercises.length,
-                    onReorder: _onReorder,
+                    onReorderItem: _onReorder,
                     itemBuilder: (context, i) {
                       final ex = _exercises[i];
                       return Card(
@@ -230,8 +230,8 @@ class _RoutineEditorScreenState extends State<RoutineEditorScreen> {
 
   // ---------------------------------------------------------------------
 
+  /// [newIndex] already accounts for the item being lifted out of the list.
   Future<void> _onReorder(int oldIndex, int newIndex) async {
-    if (newIndex > oldIndex) newIndex -= 1;
     final list = List<ExerciseDef>.from(_exercises);
     list.insert(newIndex, list.removeAt(oldIndex));
     setState(() => _exercises = list);

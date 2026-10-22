@@ -198,4 +198,64 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     await tester.runAsync(db.closeForTesting);
   });
+
+  testWidgets('switching days quickly never loses the day you land on', (tester) async {
+    tester.view.physicalSize = const Size(1080, 3600);
+    tester.view.devicePixelRatio = 2.625;
+    addTearDown(tester.view.reset);
+
+    await tester.runAsync(seed);
+    // Give another day some exercises so switching to it opens a workout.
+    final otherIndex = DateTime.now().weekday % 7 + 1;
+    await tester.runAsync(() async {
+      final routine = (await db.getActiveRoutine())!;
+      final other =
+          (await db.getDays(routine.id!)).firstWhere((d) => d.dayIndex == otherIndex);
+      await db.addExercise(ExerciseDef(
+          routineDayId: other.id!, name: 'Squat', type: TrackingType.weights,
+          targetSets: 2, sortOrder: 0));
+    });
+    final appState = AppState();
+    await tester.runAsync(appState.init);
+    await tester.pumpWidget(ChangeNotifierProvider<AppState>.value(
+      value: appState,
+      child: MaterialApp(theme: AppTheme.light(), home: const TodayScreen()),
+    ));
+    await settle(tester);
+    expect(find.text('Row'), findsOneWidget);
+
+    // Switch day while a background reload (as after midnight or an import)
+    // starts at the same moment, so two loads overlap.
+    await tester.scrollUntilVisible(find.text('Rest $otherIndex'), 80,
+        scrollable: find.byType(Scrollable).first);
+    await tester.ensureVisible(find.text('Rest $otherIndex'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rest $otherIndex'));
+    await appState.onDataImported();
+    await tester.pump();
+    await settle(tester);
+    expect(find.text('Squat'), findsOneWidget);
+
+    await tester.scrollUntilVisible(find.text('Back'), -80,
+        scrollable: find.byType(Scrollable).first);
+    await tester.ensureVisible(find.text('Back'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Back'));
+    await appState.onDataImported();
+    await tester.pump();
+    await settle(tester);
+    expect(find.text('Row'), findsOneWidget);
+    expect(find.text('Squat'), findsNothing);
+
+    // The workout on screen is real: ticking a set lands in the database.
+    await tester.tap(find.byType(Checkbox).first);
+    await settle(tester);
+    final row1 = (await tester.runAsync(() => todayLog('Row', 1)))!;
+    expect(row1.checked, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    appState.dispose();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.runAsync(db.closeForTesting);
+  });
 }

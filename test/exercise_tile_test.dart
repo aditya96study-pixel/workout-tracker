@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:workout_tracker/models/routine.dart';
 import 'package:workout_tracker/models/workout_log.dart';
+import 'package:workout_tracker/services/time_format.dart';
 import 'package:workout_tracker/widgets/exercise_tile.dart';
 
 SetLog setLog(int i, TrackingType type,
@@ -71,6 +72,52 @@ void main() {
     await tester.enterText(find.byType(TextField).at(1), '');
     await tester.pump();
     expect(changes.last.holdSeconds, isNull);
+  });
+
+  testWidgets('an over-59 seconds entry is tidied when you leave the box', (tester) async {
+    final changes = await pumpTile(tester, logs: [
+      setLog(1, TrackingType.time, hold: 60),
+      setLog(2, TrackingType.time),
+    ]);
+    await tester.enterText(find.byType(TextField).first, '888');
+    await tester.pump();
+    // Left alone while typing, but already saved as what it means.
+    expect(find.widgetWithText(TextField, '8:88'), findsOneWidget);
+    expect(changes.last.holdSeconds, 568);
+
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump();
+    expect(find.widgetWithText(TextField, '9:28'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '8:88'), findsNothing);
+    expect(parseMinSec('9:28'), 568); // display and stored value agree
+  });
+
+  testWidgets('ticking a set tidies its time too', (tester) async {
+    final toggled = <bool>[];
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: ExerciseTile(
+          exercise: ExerciseDef(
+              routineDayId: 1, name: 'Run', type: TrackingType.cardio, targetSets: 1, sortOrder: 0),
+          logs: [
+            SetLog(id: 1, sessionId: 1, exerciseDefId: 1, exerciseName: 'Run',
+                type: TrackingType.cardio, setIndex: 1, checked: false),
+          ],
+          readOnly: false,
+          onToggleSet: (_, v) => toggled.add(v),
+          onFieldChanged: (_) {},
+          onAddSet: () {},
+          onRemoveSet: (_) {},
+        ),
+      ),
+    ));
+    await tester.enterText(find.byType(TextField).first, '2575');
+    await tester.pump();
+    expect(find.widgetWithText(TextField, '25:75'), findsOneWidget);
+    await tester.tap(find.byType(Checkbox));
+    await tester.pump();
+    expect(toggled, [true]);
+    expect(find.widgetWithText(TextField, '26:15'), findsOneWidget);
   });
 
   testWidgets('rest: this workout once both sets are ticked, last time until then',

@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:cross_file/cross_file.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -98,6 +97,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       : 'Locked to ${themeProvider.mode == ThemeMode.dark ? 'dark' : 'light'} mode.',
                   style: theme.textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
                 ),
+                const SizedBox(height: 18),
+                Text('Colour theme', style: theme.textTheme.labelLarge),
+                const SizedBox(height: 10),
+                _PaletteGrid(
+                  selected: themeProvider.palette,
+                  vivid: themeProvider.vivid,
+                  onSelect: themeProvider.setPalette,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          _Panel(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              children: [
+                SwitchListTile(
+                  secondary: const Icon(Icons.palette_outlined),
+                  title: const Text('Vivid colours'),
+                  subtitle: Text(themeProvider.palette.monochrome
+                      ? 'Graphite is always greyscale'
+                      : 'Stronger, more saturated accents'),
+                  value: themeProvider.vivid && !themeProvider.palette.monochrome,
+                  onChanged: themeProvider.palette.monochrome ? null : themeProvider.setVivid,
+                ),
+                const Divider(height: 1, indent: 16, endIndent: 16),
+                SwitchListTile(
+                  secondary: const Icon(Icons.contrast),
+                  title: const Text('Pure black dark mode'),
+                  subtitle: const Text('True black backgrounds — easier on OLED screens'),
+                  value: themeProvider.pureBlack,
+                  onChanged: themeProvider.setPureBlack,
+                ),
               ],
             ),
           ),
@@ -178,6 +210,112 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
+/// One swatch per colour theme, previewed in the current brightness so what
+/// you tap is what you get.
+class _PaletteGrid extends StatelessWidget {
+  final AppPalette selected;
+  final bool vivid;
+  final ValueChanged<AppPalette> onSelect;
+
+  const _PaletteGrid({required this.selected, required this.vivid, required this.onSelect});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final brightness = theme.brightness;
+    return LayoutBuilder(builder: (context, constraints) {
+      // Four to a row on a phone; never so narrow the names get cut off.
+      final perRow = (constraints.maxWidth / 72).floor().clamp(3, 8);
+      final width = constraints.maxWidth / perRow;
+      return Wrap(
+        runSpacing: 12,
+        children: [
+          for (final p in AppPalette.values)
+            SizedBox(
+              width: width,
+              child: _Swatch(
+                palette: p,
+                scheme: AppTheme.scheme(brightness, p, vivid: vivid),
+                selected: p == selected,
+                onTap: () => onSelect(p),
+              ),
+            ),
+        ],
+      );
+    });
+  }
+}
+
+class _Swatch extends StatelessWidget {
+  final AppPalette palette;
+  final ColorScheme scheme;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _Swatch({
+    required this.palette,
+    required this.scheme,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '${palette.label} colour theme',
+      excludeSemantics: true,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                width: 44,
+                height: 44,
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: selected ? theme.colorScheme.onSurface : Colors.transparent,
+                    width: 2,
+                  ),
+                ),
+                // Half primary, half its container: shows the accent and the
+                // softer tone it pairs with.
+                child: ClipOval(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: ColoredBox(color: scheme.primary)),
+                      Expanded(child: ColoredBox(color: scheme.primaryContainer)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                palette.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+                  color: selected ? theme.colorScheme.onSurface : theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SectionLabel extends StatelessWidget {
   final String text;
   const _SectionLabel(this.text);
@@ -207,15 +345,20 @@ class _Panel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
+    // A Material rather than a coloured box: list tiles and switches inside
+    // draw their tap ripple on the nearest Material, and a coloured box in
+    // between hid it — tapping Export gave no visual feedback at all.
+    return SizedBox(
       width: double.infinity,
-      padding: padding,
-      decoration: BoxDecoration(
+      child: Material(
         color: scheme.surfaceContainerLowest,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: scheme.outlineVariant.withAlpha(120)),
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: scheme.outlineVariant.withAlpha(120)),
+        ),
+        child: Padding(padding: padding, child: child),
       ),
-      child: child,
     );
   }
 }

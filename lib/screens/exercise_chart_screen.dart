@@ -55,11 +55,15 @@ class _ExerciseChartScreenState extends State<ExerciseChartScreen> {
   }
 
   Future<void> _load() async {
-    final rows = await DBHelper.instance.getHistoryForExercise(widget.exerciseName);
+    final all = await DBHelper.instance.getHistoryForExercise(widget.exerciseName);
     if (!mounted) return;
-    final type = rows.isNotEmpty
-        ? TrackingTypeX.fromDbValue(rows.first['type'] as String)
+    // Chart the type the exercise is tracked as now (its latest sets). An
+    // exercise switched from reps to time used to keep charting only its
+    // old reps, because the oldest row decided.
+    final type = all.isNotEmpty
+        ? TrackingTypeX.fromDbValue(all.last['type'] as String)
         : TrackingType.weights;
+    final rows = all.where((r) => r['type'] == type.dbValue).toList();
     setState(() {
       _rows = rows;
       _type = type;

@@ -51,7 +51,7 @@ const String kImportJsonTemplate = '''
 }
 ''';
 
-/// type must be exactly one of: weights | time | cardio | none
+/// type must be exactly one of: weights | reps | time | cardio | none
 /// sets is optional for "none"/rest entries (defaults to 1).
 const String kImportCsvTemplate = '''
 day,dayName,exercise,type,sets

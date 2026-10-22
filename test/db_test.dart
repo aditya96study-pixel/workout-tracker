@@ -339,6 +339,83 @@ void main() {
     });
   });
 
+  group('routine edited while a workout is open', () {
+    test('a type change follows into today\'s sets so they can be ticked', () async {
+      final days = await seedRoutine();
+      final session = await openDay(days[0]);
+      final curl = (await db.getExercises(days[0].id!)).firstWhere((e) => e.name == 'Curl');
+
+      // Switch Curl from weights to time, and rename it, mid-workout.
+      await db.updateExercise(curl.copyWith(name: 'Dead Hang', type: TrackingType.time));
+      await openDay(days[0]);
+
+      final rows = (await db.getSetLogsForSession(session.id!))
+          .where((l) => l.exerciseDefId == curl.id)
+          .toList();
+      expect(rows, hasLength(2));
+      expect(rows.every((l) => l.type == TrackingType.time), isTrue);
+      expect(rows.every((l) => l.exerciseName == 'Dead Hang'), isTrue);
+      // And with a time entered, the set is tickable.
+      expect(rows.first.copyWith(holdSeconds: 40).hasRequiredValue, isTrue);
+    });
+
+    test('completed workouts keep the name and type they were done with', () async {
+      final days = await seedRoutine();
+      final session = await openDay(days[0], date: '2026-10-19');
+      final row = (await db.getSetLogsForSession(session.id!))
+          .firstWhere((l) => l.exerciseName == 'Curl' && l.setIndex == 1);
+      await tick(row, atMs: 1);
+      await db.completeSession(session.id!);
+
+      final curl = (await db.getExercises(days[0].id!)).firstWhere((e) => e.name == 'Curl');
+      await db.updateExercise(curl.copyWith(name: 'Hammer Curl'));
+      await openDay(days[0], date: '2026-10-26');
+
+      final done = await db.getCompletedLogsForSession(session.id!);
+      expect(done.single.exerciseName, 'Curl');
+    });
+  });
+
+  group('imports keep each exercise together', () {
+    test('CSV rows interleaved by set come out grouped by exercise', () {
+      final parsed = parseHistory('''
+date,day,exercise,type,set,weight,reps,seconds,distance
+2026-08-03,Push,Bench Press,weights,1,60,8,,
+2026-08-03,Push,Plank,time,1,,,45,
+2026-08-03,Push,Bench Press,weights,2,62.5,6,,
+2026-08-03,Push,Plank,time,2,,,50,
+''');
+      final sets = parsed.sessions.single.sets;
+      expect(sets.map((s) => '${s.exerciseName} ${s.setIndex}'),
+          ['Bench Press 1', 'Bench Press 2', 'Plank 1', 'Plank 2']);
+    });
+
+    test('a restored backup shows one block per exercise in History', () async {
+      final days = await seedRoutine();
+      final session = await openDay(days[0], date: '2026-10-19');
+      SetLog pick(List<SetLog> logs, String n, int i) =>
+          logs.firstWhere((l) => l.exerciseName == n && l.setIndex == i);
+      final logs = await db.getSetLogsForSession(session.id!);
+      // Superset order: Row 1, Curl 1, Row 2, Curl 2.
+      await tick(pick(logs, 'Row', 1), atMs: 1);
+      await tick(pick(logs, 'Curl', 1), atMs: 2);
+      await tick(pick(logs, 'Row', 2), atMs: 3);
+      await tick(pick(logs, 'Curl', 2), atMs: 4);
+      await db.completeSession(session.id!);
+
+      final backup = encodeExport(await db.exportAllData());
+      await freshDatabase();
+      await db.importHistory(parseHistory(backup).sessions);
+
+      final restored = (await db.getWeekSummaries())
+          .expand((w) => w.sessions)
+          .single;
+      final rows = await db.getCompletedLogsForSession(restored.id!);
+      expect(rows.map((l) => '${l.exerciseName} ${l.setIndex}'),
+          ['Row 1', 'Row 2', 'Curl 1', 'Curl 2']);
+    });
+  });
+
   group('backup round trip', () {
     test('export then import keeps added exercises and tick times', () async {
       final days = await seedRoutine();

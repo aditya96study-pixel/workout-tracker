@@ -333,7 +333,10 @@ class _ExerciseTileState extends State<ExerciseTile> {
               value: log.checked,
               onChanged: (widget.readOnly || locked)
                   ? null
-                  : (value) => widget.onToggleSet(log, value ?? false),
+                  : (value) {
+                      if (value == true) _tidyTimesFor(log);
+                      widget.onToggleSet(log, value ?? false);
+                    },
             ),
           ),
         ],
@@ -450,7 +453,7 @@ class _ExerciseTileState extends State<ExerciseTile> {
     final scheme = Theme.of(context).colorScheme;
     final muted = log.prefilled && !log.checked;
 
-    return TextField(
+    final input = TextField(
       controller: _ctrl(log, field, initial),
       enabled: !widget.readOnly && !locked,
       keyboardType: time
@@ -482,6 +485,42 @@ class _ExerciseTileState extends State<ExerciseTile> {
       ),
       onChanged: (text) => widget.onFieldChanged(onParsed(text)),
     );
+    if (!time) return input;
+    // Seconds over 59 are allowed while typing — 17:50 passes through 1:75
+    // on the way — so "8:88" is saved as 568 seconds. Once you leave the box
+    // it's rewritten as the time it actually means, 9:28, so what's shown
+    // always matches what's saved.
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onFocusChange: (hasFocus) {
+        if (!hasFocus) _tidyTime(_ctrl(log, field, initial));
+      },
+      child: input,
+    );
+  }
+
+  /// Rewrites a time box in canonical m:ss without touching what's stored
+  /// (the value is identical, so no write is needed).
+  static void _tidyTime(TextEditingController c) {
+    final seconds = parseMinSec(c.text);
+    if (seconds == null) return;
+    final tidy = formatMinSec(seconds);
+    if (tidy != c.text) {
+      c.value = TextEditingValue(
+        text: tidy,
+        selection: TextSelection.collapsed(offset: tidy.length),
+      );
+    }
+  }
+
+  /// Tidies this set's time boxes — ticking a set doesn't always move focus
+  /// out of the box you were typing in.
+  void _tidyTimesFor(SetLog log) {
+    for (final field in const ['hold', 'cardioSec']) {
+      final c = _controllers['${log.id}_$field'];
+      if (c != null) _tidyTime(c);
+    }
   }
 
   /// Text that isn't a usable number yet — "12." mid-typing, or an empty

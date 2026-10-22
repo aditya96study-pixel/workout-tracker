@@ -26,6 +26,10 @@ class ImportedSet {
   /// Keeps rest times between sets working after a restore.
   final int? checkedAtMs;
 
+  /// Tells apart two runs of the same exercise in one workout (a lift
+  /// programmed twice on one day). Backups carry it; CSVs don't need it.
+  final String? block;
+
   ImportedSet({
     required this.exerciseName,
     required this.type,
@@ -36,7 +40,30 @@ class ImportedSet {
     this.cardioSeconds,
     this.cardioDistanceKm,
     this.checkedAtMs,
+    this.block,
   });
+}
+
+/// Puts a workout's sets in order exercise by exercise — in the order each
+/// exercise first appears — with each exercise's sets in set order.
+///
+/// Sorting the whole workout by set number instead interleaved exercises
+/// (Row 1, Plank 1, Row 2, Plank 2…), and History, which groups consecutive
+/// rows, then showed every exercise split into fragments.
+List<ImportedSet> orderSetsByExercise(List<ImportedSet> sets) {
+  final groups = <String, List<ImportedSet>>{};
+  for (final s in sets) {
+    groups.putIfAbsent('${s.exerciseName}|${s.type.dbValue}|${s.block}', () => []).add(s);
+  }
+  return [
+    for (final g in groups.values)
+      ...(g.indexed.toList()
+            ..sort((a, b) {
+              final bySet = a.$2.setIndex.compareTo(b.$2.setIndex);
+              return bySet != 0 ? bySet : a.$1.compareTo(b.$1); // stable
+            }))
+          .map((e) => e.$2),
+  ];
 }
 
 /// One day's workout, as read out of a backup or a spreadsheet.
@@ -181,10 +208,10 @@ ParsedHistory _parseBackupJson(String text) {
         cardioSeconds: (l['cardio_seconds'] as num?)?.toInt(),
         cardioDistanceKm: (l['cardio_distance_km'] as num?)?.toDouble(),
         checkedAtMs: (l['checked_at'] as num?)?.toInt(),
+        block: (l['adhoc'] as num?)?.toInt() == 1 ? 'adhoc' : '${l['exercise_def_id']}',
       ));
     }
     if (sets.isEmpty) continue;
-    sets.sort((a, b) => a.setIndex.compareTo(b.setIndex));
 
     sessions.add(ImportedSession(
       date: date,
@@ -194,7 +221,7 @@ ParsedHistory _parseBackupJson(String text) {
       routineName: (raw['routine_name'] as String?)?.trim().isNotEmpty == true
           ? (raw['routine_name'] as String).trim()
           : 'Imported',
-      sets: sets,
+      sets: orderSetsByExercise(sets),
     ));
   }
 
@@ -318,7 +345,7 @@ ParsedHistory _parseHistoryCsv(String text) {
   final sessions = <ImportedSession>[];
   for (final entry in grouped.entries) {
     final m = meta[entry.key]!;
-    final sets = entry.value..sort((a, b) => a.setIndex.compareTo(b.setIndex));
+    final sets = orderSetsByExercise(entry.value);
     sessions.add(ImportedSession(
       date: m[0],
       dayName: m[1],

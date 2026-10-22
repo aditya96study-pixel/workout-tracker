@@ -12,6 +12,26 @@
 > It's fixed in this version. Follow the four steps in **Migrating your data**
 > below and your history comes back without any exporting or importing.
 
+### What's new in 2.4.0
+
+- **Colour themes.** Settings → Appearance has eight: Ocean (the original),
+  Lagoon, Forest, Sunset, Ember, Rose, Violet and Graphite. There's also a
+  *Vivid colours* switch, and *Pure black dark mode* for OLED screens.
+- **Tidier time entry.** A time like `8:88` is read as 9:28, and the box now
+  shows `9:28` as soon as you leave it or tick the set.
+- **Fixes**
+  - Changing an exercise's type in the routine while that day's workout was
+    open made its sets impossible to tick. Open workouts now follow the
+    routine's current name and type.
+  - Restored backups and CSV imports showed each workout's exercises
+    interleaved in History (Row, Plank, Row, Plank…). They're grouped again.
+  - Charts for an exercise whose tracking type changed only showed the old
+    type's data.
+  - A failed import left its button stuck with no message.
+  - Export and Import in Settings gave no tap feedback.
+  - Switching days while the app was reloading in the background could show
+    the wrong day's workout.
+
 ### What's new in 2.3.0
 
 - **Add an exercise for today only.** On the Today tab, *Add exercise for

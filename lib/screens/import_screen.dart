@@ -65,7 +65,18 @@ class _ImportScreenState extends State<ImportScreen> {
     }
 
     setState(() => _saving = true);
-    final id = await DBHelper.instance.importRoutine(name, parsed.days);
+    final int id;
+    try {
+      id = await DBHelper.instance.importRoutine(name, parsed.days);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _error = 'Could not save the routine: $e';
+        });
+      }
+      return;
+    }
     if (!mounted) return;
 
     final total = parsed.days.fold<int>(0, (s, d) => s + d.exercises.length);

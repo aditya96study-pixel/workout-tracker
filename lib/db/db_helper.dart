@@ -28,16 +28,24 @@ class DBHelper {
 
   Database? _db;
 
+  /// The open in progress, if any. Two callers at startup — the theme and
+  /// the app state both read settings immediately — share it, so the
+  /// database is opened, and migrated, exactly once.
+  Future<Database>? _opening;
+
   Future<Database> get database async {
-    _db ??= await _initDB();
-    return _db!;
+    final open = _db;
+    if (open != null) return open;
+    return _db = await (_opening ??= _initDB());
   }
 
   /// Closes and forgets the open database so a test can start fresh.
   @visibleForTesting
   Future<void> closeForTesting() async {
-    await _db?.close();
+    final pending = _opening;
     _db = null;
+    _opening = null;
+    if (pending != null) await (await pending).close();
   }
 
   Future<Database> _initDB() async {
@@ -553,6 +561,21 @@ class DBHelper {
     await db.delete('set_logs',
         where: 'session_id = ? AND exercise_def_id IS NULL AND adhoc = 0',
         whereArgs: [session.id]);
+
+    // An exercise renamed or switched to another tracking type in the
+    // routine while today's workout was open must carry its rows along.
+    // Otherwise the card asks for, say, a time while the set is checked for
+    // reps and can never be ticked — and a rename would land in history
+    // under the old name.
+    for (final ex in exercises) {
+      if (ex.id == null) continue;
+      await db.update(
+        'set_logs',
+        {'exercise_name': ex.name, 'type': ex.type.dbValue},
+        where: 'session_id = ? AND exercise_def_id = ? AND (exercise_name != ? OR type != ?)',
+        whereArgs: [session.id, ex.id, ex.name, ex.type.dbValue],
+      );
+    }
 
     final rows = await db.rawQuery(
       'SELECT exercise_def_id AS id, MAX(set_index) AS top, COUNT(*) AS n '
@@ -1349,7 +1372,7 @@ class DBHelper {
             'cardio_seconds': e.cardioSeconds,
             'cardio_distance_km': e.cardioDistanceKm,
             'prefilled': 0,
-            'adhoc': 0,
+            'adhoc': e.block == 'adhoc' ? 1 : 0,
             'checked_at': e.checkedAtMs,
             'timestamp': now,
           });
@@ -1410,6 +1433,7 @@ class DBHelper {
         SELECT l.* FROM set_logs l
         JOIN sessions s ON s.id = l.session_id
         WHERE l.checked = 1 AND s.status = 'completed'
+        ORDER BY l.session_id ASC, l.id ASC
       '''),
     };
   }

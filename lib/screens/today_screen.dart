@@ -46,6 +46,14 @@ class _TodayScreenState extends State<TodayScreen> {
   bool _loading = true;
   bool _busy = false;
 
+  /// Day loads run one at a time, and only the newest one counts. Two loads
+  /// overlapping (tapping between days quickly) could otherwise let the
+  /// slower one delete the other day's freshly opened draft — and show it
+  /// under the wrong chip, so ticks went into a workout that no longer
+  /// existed.
+  Future<void> _loadQueue = Future.value();
+  int _loadGeneration = 0;
+
   @override
   void dispose() {
     _scroll.dispose();
@@ -222,7 +230,18 @@ class _TodayScreenState extends State<TodayScreen> {
     await _loadDay();
   }
 
-  Future<void> _loadDay() async {
+  Future<void> _loadDay() {
+    final generation = ++_loadGeneration;
+    final run = _loadQueue.then((_) => _loadDayNow(generation));
+    _loadQueue = run.catchError((_) {});
+    return run;
+  }
+
+  bool _isStale(int generation) => !mounted || generation != _loadGeneration;
+
+  Future<void> _loadDayNow(int generation) async {
+    // A newer load is already queued behind this one — let it do the work.
+    if (_isStale(generation)) return;
     final dayIndex = _selectedDayIndex;
     if (_days.isEmpty || dayIndex == null) {
       if (mounted) setState(() => _loading = false);
@@ -234,7 +253,7 @@ class _TodayScreenState extends State<TodayScreen> {
     final day = matches.isNotEmpty ? matches.first : _days.first;
 
     final exercises = await DBHelper.instance.getExercises(day.id!);
-    if (!mounted) return;
+    if (_isStale(generation)) return;
     final routine = context.read<AppState>().activeRoutine;
     if (routine == null) return;
 
@@ -265,7 +284,7 @@ class _TodayScreenState extends State<TodayScreen> {
     }
 
     final counts = await DBHelper.instance.getCompletedDayCountsForWeek(currentWeekStart());
-    if (!mounted) return;
+    if (_isStale(generation)) return;
 
     setState(() {
       _exercises = exercises;

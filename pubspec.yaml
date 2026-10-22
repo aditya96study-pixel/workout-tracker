@@ -1,7 +1,7 @@
 name: workout_tracker
 description: A 100% offline workout routine tracker.
 publish_to: 'none'
-version: 2.3.0+5
+version: 2.4.0+6
 
 environment:
   # share_plus 13.x requires Dart 3.10+, so claiming an older floor here only
