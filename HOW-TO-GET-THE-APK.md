@@ -12,6 +12,22 @@
 > It's fixed in this version. Follow the four steps in **Migrating your data**
 > below and your history comes back without any exporting or importing.
 
+### What's new in 2.3.0
+
+- **Add an exercise for today only.** On the Today tab, *Add exercise for
+  today* (below the last exercise) puts something like Bench Press into a
+  Back day without changing your routine. It's tagged *Added today*, pre-fills
+  from the last time you did it, and every set you tick counts towards its
+  history and chart like any other exercise.
+- **Times are min:sec.** Holds, cardio time, pace and the charts all read as
+  `1:30` instead of `90` seconds. Type the digits and the colon fills itself
+  in: 1, 3, 0 gives `1:30`.
+- **Rest between sets.** Between two sets of the same exercise the app shows
+  how long you rested — from ticking one set to ticking the next, whatever you
+  did in between (supersets included). Until you tick the next set you see
+  last time's rest, greyed like last time's weights.
+- Your data upgrades in place on first launch; nothing to export or re-import.
+
 ### What's new in 2.2.0
 
 - **Import history** (Settings → Import history). Restore a backup this app

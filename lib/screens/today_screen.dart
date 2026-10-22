@@ -6,7 +6,21 @@ import '../db/db_helper.dart';
 import '../models/routine.dart';
 import '../models/workout_log.dart';
 import '../services/app_dates.dart';
+import '../widgets/exercise_dialog.dart';
 import '../widgets/exercise_tile.dart';
+
+/// One exercise card on the Today screen: either a routine exercise, or one
+/// added to this workout only.
+class _Slot {
+  /// Matches [SetLog.exerciseKey] for the rows that belong to this card.
+  final String key;
+
+  /// For an added exercise this is a stand-in with no id and no target sets.
+  final ExerciseDef def;
+  final bool adhoc;
+
+  const _Slot(this.key, this.def, {this.adhoc = false});
+}
 
 class TodayScreen extends StatefulWidget {
   const TodayScreen({super.key});
@@ -24,10 +38,19 @@ class _TodayScreenState extends State<TodayScreen> {
   int? _selectedDayIndex;
   List<ExerciseDef> _exercises = [];
   WorkoutSession? _session;
-  Map<int, List<SetLog>> _logsByExercise = {};
+  List<_Slot> _slots = [];
+  Map<String, List<SetLog>> _logsByKey = {};
+  Map<String, Map<int, int>> _previousRestByKey = {};
+  final ScrollController _scroll = ScrollController();
   Map<int, int> _weekDayCounts = {};
   bool _loading = true;
   bool _busy = false;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -118,21 +141,31 @@ class _TodayScreenState extends State<TodayScreen> {
                   child: _exercises.isEmpty
                       ? const _RestDayState()
                       : ListView.builder(
+                          controller: _scroll,
                           padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                          itemCount: _exercises.length,
+                          itemCount: _slots.length + (_canAddExercise ? 1 : 0),
                           itemBuilder: (context, i) {
-                            final ex = _exercises[i];
+                            if (i == _slots.length) {
+                              return _AddExerciseButton(
+                                onPressed: _busy ? null : _addExercise,
+                              );
+                            }
+                            final slot = _slots[i];
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 10),
                               child: ExerciseTile(
-                                key: ValueKey('${session?.id}_${ex.id}'),
-                                exercise: ex,
-                                logs: _logsByExercise[ex.id] ?? const [],
+                                key: ValueKey('${session?.id}_${slot.key}'),
+                                exercise: slot.def,
+                                logs: _logsByKey[slot.key] ?? const [],
                                 readOnly: session?.isCompleted ?? false,
+                                previousRest: _previousRestByKey[slot.key] ?? const {},
+                                isAdhoc: slot.adhoc,
                                 onToggleSet: _toggleSet,
                                 onFieldChanged: _onFieldChanged,
-                                onAddSet: () => _addSet(ex),
+                                onAddSet: () => _addSet(slot),
                                 onRemoveSet: _removeSet,
+                                onRemoveExercise:
+                                    slot.adhoc ? () => _removeAdhocExercise(slot) : null,
                               ),
                             );
                           },
@@ -206,7 +239,9 @@ class _TodayScreenState extends State<TodayScreen> {
     if (routine == null) return;
 
     WorkoutSession? session;
-    Map<int, List<SetLog>> grouped = {};
+    var slots = <_Slot>[];
+    var grouped = <String, List<SetLog>>{};
+    var previousRest = <String, Map<int, int>>{};
 
     // Rest days get no session row at all — there's nothing to record, and
     // creating one would make the week summary think a workout happened. If
@@ -222,10 +257,11 @@ class _TodayScreenState extends State<TodayScreen> {
         exercises,
       );
       final logs = await DBHelper.instance.getSetLogsForSession(session.id!);
-      for (final ex in exercises) {
-        grouped[ex.id!] = logs.where((l) => l.exerciseDefId == ex.id).toList()
-          ..sort((a, b) => a.setIndex.compareTo(b.setIndex));
-      }
+      final built = _buildSlots(exercises, logs);
+      slots = built.slots;
+      grouped = built.logs;
+      // A finished workout shows only what was actually done.
+      if (!session.isCompleted) previousRest = await _loadPreviousRest(slots);
     }
 
     final counts = await DBHelper.instance.getCompletedDayCountsForWeek(currentWeekStart());
@@ -234,11 +270,77 @@ class _TodayScreenState extends State<TodayScreen> {
     setState(() {
       _exercises = exercises;
       _session = session;
-      _logsByExercise = grouped;
+      _slots = slots;
+      _logsByKey = grouped;
+      _previousRestByKey = previousRest;
       _weekDayCounts = counts;
       _loading = false;
     });
     await context.read<AppState>().onSessionChanged();
+  }
+
+  /// Routine exercises in routine order, then exercises added today in the
+  /// order they were added.
+  ({List<_Slot> slots, Map<String, List<SetLog>> logs}) _buildSlots(
+    List<ExerciseDef> exercises,
+    List<SetLog> logs,
+  ) {
+    final slots = <_Slot>[];
+    final grouped = <String, List<SetLog>>{};
+    for (final ex in exercises) {
+      final key = SetLog.routineKey(ex.id!);
+      slots.add(_Slot(key, ex));
+      grouped[key] = [];
+    }
+
+    final adhoc = <String, _Slot>{};
+    final firstId = <String, int>{};
+    for (final log in logs) {
+      final key = log.exerciseKey;
+      if (key == null) continue;
+      if (log.adhoc) {
+        adhoc.putIfAbsent(
+          key,
+          () => _Slot(
+            key,
+            ExerciseDef(
+              routineDayId: 0,
+              name: log.exerciseName,
+              type: log.type,
+              targetSets: 0,
+              sortOrder: 0,
+            ),
+            adhoc: true,
+          ),
+        );
+        final id = log.id ?? 0;
+        if (!firstId.containsKey(key) || id < firstId[key]!) firstId[key] = id;
+        grouped.putIfAbsent(key, () => []);
+      }
+      grouped[key]?.add(log);
+    }
+
+    final added = adhoc.values.toList()
+      ..sort((a, b) => firstId[a.key]!.compareTo(firstId[b.key]!));
+    slots.addAll(added);
+    for (final list in grouped.values) {
+      list.sort(_bySetOrder);
+    }
+    return (slots: slots, logs: grouped);
+  }
+
+  static int _bySetOrder(SetLog a, SetLog b) {
+    final byIndex = a.setIndex.compareTo(b.setIndex);
+    return byIndex != 0 ? byIndex : (a.id ?? 0).compareTo(b.id ?? 0);
+  }
+
+  Future<Map<String, Map<int, int>>> _loadPreviousRest(List<_Slot> slots) async {
+    final result = <String, Map<int, int>>{};
+    for (final slot in slots) {
+      result[slot.key] =
+          await DBHelper.instance.getPreviousRestSeconds(slot.def.name, slot.def.type);
+    }
+    return result;
   }
 
   // ---------------------------------------------------------------------
@@ -260,38 +362,44 @@ class _TodayScreenState extends State<TodayScreen> {
   // Set interactions
   // ---------------------------------------------------------------------
 
-  int get _doneSetCount =>
-      _logsByExercise.values.fold(0, (sum, logs) => sum + logs.where((l) => l.checked).length);
+  bool get _canAddExercise => _session != null && !_session!.isCompleted;
 
-  int get _totalSetCount =>
-      _logsByExercise.values.fold(0, (sum, logs) => sum + logs.length);
+  int get _doneSetCount =>
+      _logsByKey.values.fold(0, (sum, logs) => sum + logs.where((l) => l.checked).length);
+
+  int get _totalSetCount => _logsByKey.values.fold(0, (sum, logs) => sum + logs.length);
 
   Future<void> _toggleSet(SetLog log, bool checked) async {
     if (checked && !log.hasRequiredValue) {
       _snack('Enter this set\'s numbers before ticking it off.');
       return;
     }
-    final exId = log.exerciseDefId;
-    if (exId == null) return;
-    final exLogs = _logsByExercise[exId];
+    final key = log.exerciseKey;
+    if (key == null) return;
+    final exLogs = _logsByKey[key];
     if (exLogs == null) return;
     final idx = exLogs.indexWhere((l) => l.id == log.id);
     if (idx == -1) return;
 
     final updates = <SetLog>[];
     if (checked) {
-      updates.add(log.copyWith(checked: true, prefilled: false));
+      // The tick time is what rest between sets is measured from.
+      updates.add(log.copyWith(
+        checked: true,
+        prefilled: false,
+        checkedAtMs: DateTime.now().millisecondsSinceEpoch,
+      ));
     } else {
       // Cascade: unchecking a set clears every set after it, keeping the
       // completed sets an unbroken run from set 1.
       for (var i = idx; i < exLogs.length; i++) {
         if (exLogs[i].checked || i == idx) {
-          updates.add(exLogs[i].copyWith(checked: false));
+          updates.add(exLogs[i].copyWith(checked: false, checkedAtMs: null));
         }
       }
     }
 
-    _applyLocalUpdates(exId, updates);
+    _applyLocalUpdates(key, updates);
     await DBHelper.instance.updateSetLogs(updates);
     await _syncSessionStatus();
   }
@@ -306,28 +414,29 @@ class _TodayScreenState extends State<TodayScreen> {
   /// A checked set left without numbers is instead cleaned up once, at the
   /// moment the workout is completed.
   Future<void> _onFieldChanged(SetLog updated) async {
-    final exId = updated.exerciseDefId;
-    if (exId == null) return;
-    _applyLocalUpdates(exId, [updated]);
+    final key = updated.exerciseKey;
+    if (key == null) return;
+    _applyLocalUpdates(key, [updated]);
     await DBHelper.instance.updateSetLog(updated);
   }
 
-  void _applyLocalUpdates(int exId, List<SetLog> updates) {
+  void _applyLocalUpdates(String key, List<SetLog> updates) {
     if (!mounted) return;
     setState(() {
-      final list = List<SetLog>.from(_logsByExercise[exId] ?? const []);
+      final list = List<SetLog>.from(_logsByKey[key] ?? const []);
       for (final u in updates) {
         final i = list.indexWhere((l) => l.id == u.id);
         if (i != -1) list[i] = u;
       }
-      _logsByExercise[exId] = list;
+      _logsByKey[key] = list;
     });
   }
 
-  Future<void> _addSet(ExerciseDef ex) async {
+  Future<void> _addSet(_Slot slot) async {
     final session = _session;
     if (session == null) return;
-    final exLogs = _logsByExercise[ex.id] ?? const <SetLog>[];
+    final ex = slot.def;
+    final exLogs = _logsByKey[slot.key] ?? const <SetLog>[];
     final last = exLogs.isNotEmpty ? exLogs.last : null;
     // Highest existing index + 1, not count + 1 — otherwise removing a middle
     // set and adding another would reuse an index that's already taken.
@@ -348,20 +457,128 @@ class _TodayScreenState extends State<TodayScreen> {
       cardioSeconds: last?.cardioSeconds,
       cardioDistanceKm: last?.cardioDistanceKm,
       prefilled: true,
+      adhoc: slot.adhoc,
     ));
     if (!mounted) return;
-    setState(() => _logsByExercise[ex.id!] = [...exLogs, created]);
+    setState(() => _logsByKey[slot.key] = [...exLogs, created]);
   }
 
   Future<void> _removeSet(SetLog log) async {
-    final exId = log.exerciseDefId;
-    if (exId == null) return;
+    final key = log.exerciseKey;
+    if (key == null) return;
     await DBHelper.instance.deleteSetLog(log.id!);
     if (!mounted) return;
     setState(() {
-      _logsByExercise[exId] =
-          (_logsByExercise[exId] ?? const <SetLog>[]).where((l) => l.id != log.id).toList();
+      final remaining =
+          (_logsByKey[key] ?? const <SetLog>[]).where((l) => l.id != log.id).toList();
+      _logsByKey[key] = remaining;
+      // An added exercise exists only through its sets, so removing the last
+      // one removes the exercise.
+      if (log.adhoc && remaining.isEmpty) _dropSlot(key);
     });
+    await _syncSessionStatus();
+  }
+
+  void _dropSlot(String key) {
+    _slots = _slots.where((s) => s.key != key).toList();
+    _logsByKey.remove(key);
+    _previousRestByKey.remove(key);
+  }
+
+  // ---------------------------------------------------------------------
+  // Exercises added for today only
+  // ---------------------------------------------------------------------
+
+  Future<void> _addExercise() async {
+    final session = _session;
+    if (session?.id == null || session!.isCompleted) return;
+
+    final names = await DBHelper.instance.getKnownExerciseNames();
+    final types = await DBHelper.instance.getKnownExerciseTypes();
+    if (!mounted) return;
+    final result = await showDialog<ExerciseFormResult>(
+      context: context,
+      builder: (context) => ExerciseDialog(
+        knownNames: names,
+        knownTypes: types,
+        title: 'Add exercise',
+        subtitle: 'For this workout only — your routine stays the same. '
+            'Sets you tick off count towards its history and charts.',
+        confirmLabel: 'Add',
+      ),
+    );
+    if (result == null || !mounted || _session?.id != session.id) return;
+
+    // History and charts match exercises by exact name, so reuse the
+    // spelling already on record rather than starting a second history for
+    // "bench press" next to "Bench Press".
+    final typed = result.name.trim();
+    final name = names.firstWhere(
+      (n) => n.toLowerCase() == typed.toLowerCase(),
+      orElse: () => typed,
+    );
+    if (_slots.any((s) => s.def.name.toLowerCase() == name.toLowerCase())) {
+      _snack('$name is already in this workout — use "Add set" on it instead.');
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      await DBHelper.instance.addAdhocExercise(
+        sessionId: session.id!,
+        name: name,
+        type: result.type,
+        sets: result.sets,
+      );
+      final logs = await DBHelper.instance.getSetLogsForSession(session.id!);
+      final rest = await DBHelper.instance.getPreviousRestSeconds(name, result.type);
+      if (!mounted || _session?.id != session.id) return;
+      final built = _buildSlots(_exercises, logs);
+      setState(() {
+        _slots = built.slots;
+        _logsByKey = built.logs;
+        _previousRestByKey[SetLog.adhocKey(name, result.type)] = rest;
+      });
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+
+    // The new card lands at the bottom, likely off screen.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      _scroll.animateTo(
+        _scroll.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  Future<void> _removeAdhocExercise(_Slot slot) async {
+    final session = _session;
+    if (session?.id == null) return;
+    final logs = _logsByKey[slot.key] ?? const <SetLog>[];
+    if (logs.any((l) => l.checked)) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Remove ${slot.def.name}?'),
+          content: const Text('The sets you ticked off for it in this workout will be deleted.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Remove')),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
+    await DBHelper.instance.deleteAdhocExercise(
+      sessionId: session!.id!,
+      name: slot.def.name,
+      type: slot.def.type,
+    );
+    if (!mounted) return;
+    setState(() => _dropSlot(slot.key));
     await _syncSessionStatus();
   }
 
@@ -589,6 +806,29 @@ class _DaySelector extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+class _AddExerciseButton extends StatelessWidget {
+  final VoidCallback? onPressed;
+  const _AddExerciseButton({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 4),
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: const Icon(Icons.add, size: 18),
+        label: const Text('Add exercise for today'),
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size.fromHeight(44),
+          side: BorderSide(color: scheme.outlineVariant),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        ),
+      ),
     );
   }
 }

@@ -29,19 +29,26 @@ extension ChartMetricX on ChartMetric {
       case ChartMetric.repsTotal:
         return 'Total reps per session';
       case ChartMetric.holdSeconds:
-        return 'Hold time (s)';
+        return 'Hold time (min:sec)';
       case ChartMetric.cardioDistanceKm:
         return 'Distance (km)';
       case ChartMetric.cardioDurationSeconds:
-        return 'Duration (min)';
+        return 'Duration (min:sec)';
       case ChartMetric.cardioPaceMinPerKm:
-        return 'Pace (min/km)';
+        return 'Pace (min:sec per km)';
     }
   }
+
+  /// Metrics whose values are durations in seconds, shown as min:sec.
+  bool get isDuration =>
+      this == ChartMetric.holdSeconds ||
+      this == ChartMetric.cardioDurationSeconds ||
+      this == ChartMetric.cardioPaceMinPerKm;
 }
 
-/// Pace in minutes-per-km. Returns null if distance is zero (can't compute).
-double? computePaceMinPerKm({required int seconds, required double distanceKm}) {
+/// Pace in seconds per km, so it can be shown as min:sec like every other
+/// duration. Returns null if distance is zero (can't compute).
+double? computePaceSecondsPerKm({required int seconds, required double distanceKm}) {
   if (distanceKm <= 0) return null;
-  return (seconds / 60) / distanceKm;
+  return seconds / distanceKm;
 }

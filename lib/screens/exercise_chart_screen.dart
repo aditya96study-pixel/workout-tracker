@@ -5,6 +5,7 @@ import '../db/db_helper.dart';
 import '../models/routine.dart';
 import '../services/app_dates.dart';
 import '../services/one_rm.dart';
+import '../services/time_format.dart';
 
 /// How several sets on the same date collapse into one chart point.
 enum _Agg { max, min, sum }
@@ -110,14 +111,13 @@ class _ExerciseChartScreenState extends State<ExerciseChartScreen> {
           value = (row['cardio_distance_km'] as num?)?.toDouble();
           break;
         case ChartMetric.cardioDurationSeconds:
-          final durationSecs = (row['cardio_seconds'] as num?)?.toDouble();
-          if (durationSecs != null) value = durationSecs / 60.0;
+          value = (row['cardio_seconds'] as num?)?.toDouble();
           break;
         case ChartMetric.cardioPaceMinPerKm:
           final paceSecs = (row['cardio_seconds'] as num?)?.toInt();
           final paceKm = (row['cardio_distance_km'] as num?)?.toDouble();
           if (paceSecs != null && paceKm != null) {
-            value = computePaceMinPerKm(seconds: paceSecs, distanceKm: paceKm);
+            value = computePaceSecondsPerKm(seconds: paceSecs, distanceKm: paceKm);
           }
           agg = _Agg.min;
           break;
@@ -197,6 +197,7 @@ class _ExerciseChartScreenState extends State<ExerciseChartScreen> {
                         points: points,
                         unit: _unitSuffix(),
                         lowerIsBetter: _lowerIsBetter,
+                        format: _formatValue,
                       ),
                       const SizedBox(height: 18),
                       Text(
@@ -211,6 +212,8 @@ class _ExerciseChartScreenState extends State<ExerciseChartScreen> {
                           points: points,
                           unitSuffix: _unitSuffix(),
                           zoom: _zoom,
+                          format: _formatValue,
+                          isDuration: _metric.isDuration,
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -230,6 +233,9 @@ class _ExerciseChartScreenState extends State<ExerciseChartScreen> {
     );
   }
 
+  String _formatValue(double v) =>
+      _metric.isDuration ? formatMinSec(v.round()) : _StatRow._fmt(v);
+
   String _unitSuffix() {
     switch (_metric) {
       case ChartMetric.oneRepMax:
@@ -238,13 +244,13 @@ class _ExerciseChartScreenState extends State<ExerciseChartScreen> {
       case ChartMetric.repsTotal:
         return 'reps';
       case ChartMetric.holdSeconds:
-        return 's';
+        return 'min';
       case ChartMetric.cardioDistanceKm:
         return 'km';
       case ChartMetric.cardioDurationSeconds:
         return 'min';
       case ChartMetric.cardioPaceMinPerKm:
-        return 'min/km';
+        return '/km';
     }
   }
 }
@@ -255,8 +261,14 @@ class _StatRow extends StatelessWidget {
   final List<_Point> points;
   final String unit;
   final bool lowerIsBetter;
+  final String Function(double) format;
 
-  const _StatRow({required this.points, required this.unit, required this.lowerIsBetter});
+  const _StatRow({
+    required this.points,
+    required this.unit,
+    required this.lowerIsBetter,
+    required this.format,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -283,7 +295,7 @@ class _StatRow extends StatelessWidget {
                   style: theme.textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
               const SizedBox(height: 2),
               Text(
-                '${_fmt(latest)} $unit',
+                '${format(latest)} $unit',
                 style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
               ),
               Text(shortDate(points.last.date),
@@ -298,7 +310,7 @@ class _StatRow extends StatelessWidget {
               Text('Best',
                   style: theme.textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
               const SizedBox(height: 2),
-              Text('${_fmt(best)} $unit',
+              Text('${format(best)} $unit',
                   style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
             ],
           ),
@@ -321,7 +333,7 @@ class _StatRow extends StatelessWidget {
                     const SizedBox(width: 2),
                     Flexible(
                       child: Text(
-                        _fmt(delta.abs()),
+                        format(delta.abs()),
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w600,
@@ -388,8 +400,19 @@ class _Chart extends StatelessWidget {
   final List<_Point> points;
   final String unitSuffix;
   final TransformationController zoom;
+  final String Function(double) format;
 
-  const _Chart({required this.points, required this.unitSuffix, required this.zoom});
+  /// Y values are seconds: axis ticks land on round times (0:30, 1:00, ...)
+  /// rather than wherever plain-number spacing would put them.
+  final bool isDuration;
+
+  const _Chart({
+    required this.points,
+    required this.unitSuffix,
+    required this.zoom,
+    required this.format,
+    required this.isDuration,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -406,6 +429,7 @@ class _Chart extends StatelessWidget {
     final maxX = points.last.x;
     final xPad =
         points.length < 2 ? 1.0 : (maxX * 0.04).clamp(0.4, 3.0).toDouble();
+    final yInterval = isDuration ? _durationInterval((maxY + yPad) - (minY - yPad)) : null;
 
     return LineChart(
       LineChartData(
@@ -416,6 +440,7 @@ class _Chart extends StatelessWidget {
         gridData: FlGridData(
           show: true,
           drawVerticalLine: false,
+          horizontalInterval: yInterval,
           getDrawingHorizontalLine: (value) => FlLine(
             color: scheme.outlineVariant.withAlpha(90),
             strokeWidth: 1,
@@ -429,10 +454,11 @@ class _Chart extends StatelessWidget {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 46,
+              interval: yInterval,
               getTitlesWidget: (value, meta) => Padding(
                 padding: const EdgeInsets.only(right: 6),
                 child: Text(
-                  _axisNumber(value),
+                  isDuration ? _durationLabel(value, yInterval!) : _axisNumber(value),
                   style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
                   textAlign: TextAlign.right,
                 ),
@@ -445,6 +471,10 @@ class _Chart extends StatelessWidget {
               reservedSize: 30,
               interval: _bottomInterval(),
               getTitlesWidget: (value, meta) {
+                // The left edge sits just before the first point, which is
+                // already labelled at x = 0; labelling the edge too printed
+                // the first date twice, one on top of the other.
+                if (value == meta.min && value < 0) return const SizedBox.shrink();
                 // Only label x positions that correspond to a real session.
                 final matches = points.where((p) => (p.x - value).abs() < 0.5);
                 if (matches.isEmpty) return const SizedBox.shrink();
@@ -479,7 +509,7 @@ class _Chart extends StatelessWidget {
                 ),
                 children: [
                   TextSpan(
-                    text: '${_StatRow._fmt(s.y)} $unitSuffix',
+                    text: '${format(s.y)} $unitSuffix',
                     style: TextStyle(
                       color: scheme.onInverseSurface,
                       fontSize: 15,
@@ -533,6 +563,25 @@ class _Chart extends StatelessWidget {
     // Aim for roughly five labels across the axis.
     final raw = span / 5;
     return raw < 1 ? 1.0 : raw.ceilToDouble();
+  }
+
+  /// Only round steps get a label. The chart also labels its top and bottom
+  /// edges, which for a duration would read as odd times like 1:18.
+  static String _durationLabel(double value, double interval) {
+    if (value < 0) return '';
+    final steps = value / interval;
+    if ((steps - steps.round()).abs() > 0.001) return '';
+    return formatMinSec(value.round());
+  }
+
+  /// A round step in seconds that gives roughly four to six ticks.
+  static double _durationInterval(double span) {
+    const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200];
+    final target = span / 5;
+    for (final step in steps) {
+      if (step >= target) return step.toDouble();
+    }
+    return steps.last.toDouble();
   }
 
   static String _axisNumber(double v) {

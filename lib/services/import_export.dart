@@ -79,7 +79,7 @@ Convert my workout plan into the exact JSON format below. Rules:
 - "type" must be exactly one of:
     "weights" - lifted weight and reps
     "reps"    - a count only, for bodyweight work (push-ups, pull-ups, dips)
-    "time"    - a timed hold in seconds (planks, dead hangs, stretches)
+    "time"    - a timed hold, logged as min:sec (planks, dead hangs, stretches)
     "cardio"  - time and/or distance
     "none"    - no numbers, just tick the set off
   Use "reps" for any bodyweight exercise where weight would be meaningless.

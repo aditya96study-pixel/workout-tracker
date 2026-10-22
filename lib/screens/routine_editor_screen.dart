@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../db/db_helper.dart';
 import '../models/routine.dart';
+import '../widgets/exercise_dialog.dart';
 
 class RoutineEditorScreen extends StatefulWidget {
   final int routineId;
@@ -18,6 +19,7 @@ class _RoutineEditorScreenState extends State<RoutineEditorScreen> {
   List<ExerciseDef> _exercises = [];
   Map<int, int> _dayCounts = {};
   List<String> _knownNames = [];
+  Map<String, TrackingType> _knownTypes = {};
   bool _loading = true;
 
   @override
@@ -31,6 +33,7 @@ class _RoutineEditorScreenState extends State<RoutineEditorScreen> {
     final routine = await DBHelper.instance.getRoutine(widget.routineId);
     final days = await DBHelper.instance.getDays(widget.routineId);
     final names = await DBHelper.instance.getKnownExerciseNames();
+    final types = await DBHelper.instance.getKnownExerciseTypes();
     final counts = <int, int>{};
     for (final d in days) {
       counts[d.id!] = await DBHelper.instance.countExercises(d.id!);
@@ -41,6 +44,7 @@ class _RoutineEditorScreenState extends State<RoutineEditorScreen> {
       _days = days;
       _dayCounts = counts;
       _knownNames = names;
+      _knownTypes = types;
     });
     await _loadExercises();
   }
@@ -308,9 +312,13 @@ class _RoutineEditorScreenState extends State<RoutineEditorScreen> {
   }
 
   Future<void> _addOrEditExercise({ExerciseDef? existing}) async {
-    final result = await showDialog<_ExerciseFormResult>(
+    final result = await showDialog<ExerciseFormResult>(
       context: context,
-      builder: (context) => _ExerciseDialog(existing: existing, knownNames: _knownNames),
+      builder: (context) => ExerciseDialog(
+        existing: existing,
+        knownNames: _knownNames,
+        knownTypes: _knownTypes,
+      ),
     );
     if (result == null || !mounted) return;
 
@@ -357,152 +365,6 @@ class _RoutineEditorScreenState extends State<RoutineEditorScreen> {
 }
 
 // -----------------------------------------------------------------------
-
-class _ExerciseFormResult {
-  final String name;
-  final TrackingType type;
-  final int sets;
-  _ExerciseFormResult(this.name, this.type, this.sets);
-}
-
-class _ExerciseDialog extends StatefulWidget {
-  final ExerciseDef? existing;
-  final List<String> knownNames;
-
-  const _ExerciseDialog({this.existing, required this.knownNames});
-
-  @override
-  State<_ExerciseDialog> createState() => _ExerciseDialogState();
-}
-
-class _ExerciseDialogState extends State<_ExerciseDialog> {
-  /// Owned by the Autocomplete widget, captured here so Save can read it.
-  TextEditingController? _fieldCtrl;
-  late TrackingType _type;
-  late int _sets;
-
-  @override
-  void initState() {
-    super.initState();
-    _type = widget.existing?.type ?? TrackingType.weights;
-    _sets = widget.existing?.targetSets ?? 3;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.existing == null ? 'Add exercise' : 'Edit exercise'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Suggesting names you've used before is what keeps one lift's
-            // history on one chart instead of split across near-duplicates.
-            Autocomplete<String>(
-              initialValue: TextEditingValue(text: widget.existing?.name ?? ''),
-              optionsBuilder: (value) {
-                final q = value.text.trim().toLowerCase();
-                if (q.isEmpty) return const Iterable<String>.empty();
-                return widget.knownNames.where(
-                    (n) => n.toLowerCase().contains(q) && n.toLowerCase() != q);
-              },
-              fieldViewBuilder: (context, controller, focusNode, onSubmitted) {
-                // The Autocomplete owns this controller (and disposes it);
-                // we only hold the reference so Save can read the text.
-                _fieldCtrl = controller;
-                return TextField(
-                  controller: controller,
-                  focusNode: focusNode,
-                  autofocus: widget.existing == null,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: const InputDecoration(
-                    labelText: 'Exercise name',
-                    hintText: 'e.g. Bench Press',
-                  ),
-                );
-              },
-            ),
-            const SizedBox(height: 18),
-            Text('Track', style: Theme.of(context).textTheme.labelMedium),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 6,
-              children: TrackingType.values
-                  .map((t) => ChoiceChip(
-                        label: Text(t.label),
-                        selected: _type == t,
-                        onSelected: (_) => setState(() => _type = t),
-                      ))
-                  .toList(),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              _typeHint(_type),
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
-            const SizedBox(height: 18),
-            Row(
-              children: [
-                Text('Sets', style: Theme.of(context).textTheme.labelMedium),
-                const Spacer(),
-                IconButton.filledTonal(
-                  onPressed: _sets > 1 ? () => setState(() => _sets--) : null,
-                  icon: const Icon(Icons.remove, size: 18),
-                  visualDensity: VisualDensity.compact,
-                ),
-                SizedBox(
-                  width: 40,
-                  child: Text('$_sets',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.titleMedium),
-                ),
-                IconButton.filledTonal(
-                  onPressed: _sets < 20 ? () => setState(() => _sets++) : null,
-                  icon: const Icon(Icons.add, size: 18),
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-        FilledButton(
-          onPressed: () {
-            final name = (_fieldCtrl?.text ?? '').trim();
-            if (name.isEmpty) {
-              ScaffoldMessenger.of(context)
-                ..hideCurrentSnackBar()
-                ..showSnackBar(const SnackBar(content: Text('Give the exercise a name.')));
-              return;
-            }
-            Navigator.pop(context, _ExerciseFormResult(name, _type, _sets));
-          },
-          child: const Text('Save'),
-        ),
-      ],
-    );
-  }
-
-  static String _typeHint(TrackingType t) {
-    switch (t) {
-      case TrackingType.weights:
-        return 'Logs kilograms × reps, and charts your estimated 1RM.';
-      case TrackingType.reps:
-        return 'Just a count — push-ups, pull-ups, any bodyweight work.';
-      case TrackingType.time:
-        return 'Logs a hold in seconds — planks, dead hangs, stretches.';
-      case TrackingType.cardio:
-        return 'Logs time and distance, and charts pace.';
-      case TrackingType.none:
-        return 'No numbers — just tick the set off when it\'s done.';
-    }
-  }
-}
 
 class _EmptyDay extends StatelessWidget {
   final VoidCallback onAdd;

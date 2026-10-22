@@ -143,6 +143,18 @@ class SetLog {
   /// hint so pre-filled figures look different from ones you typed.
   final bool prefilled;
 
+  /// True for an exercise added to this one workout on the day, outside the
+  /// routine (e.g. bench press slipped into a back day). These rows have no
+  /// [exerciseDefId], so this flag is what keeps them from being mistaken
+  /// for rows orphaned by a deleted routine exercise. Within a session an
+  /// ad-hoc exercise is identified by its name and type.
+  final bool adhoc;
+
+  /// When this set was ticked off, or null while it isn't. The gap between
+  /// two consecutive sets of the same exercise is the rest shown between
+  /// them — whatever else was done in the meantime.
+  final int? checkedAtMs;
+
   SetLog({
     this.id,
     required this.sessionId,
@@ -157,8 +169,21 @@ class SetLog {
     this.cardioSeconds,
     this.cardioDistanceKm,
     this.prefilled = false,
+    this.adhoc = false,
+    this.checkedAtMs,
     int? timestampMs,
   }) : timestampMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
+
+  /// Which exercise card this row belongs to within its session: the routine
+  /// exercise's id, or name + type for an ad-hoc exercise. Null for a row
+  /// whose routine exercise has since been deleted.
+  String? get exerciseKey {
+    if (adhoc) return adhocKey(exerciseName, type);
+    return exerciseDefId == null ? null : routineKey(exerciseDefId!);
+  }
+
+  static String routineKey(int exerciseDefId) => 'r:$exerciseDefId';
+  static String adhocKey(String name, TrackingType type) => 'a:${type.dbValue}:$name';
 
   /// Whether this set carries the numbers its tracking type requires.
   bool get hasRequiredValue {
@@ -187,6 +212,7 @@ class SetLog {
     Object? cardioDistanceKm = _unset,
     bool? prefilled,
     int? setIndex,
+    Object? checkedAtMs = _unset,
   }) =>
       SetLog(
         id: id,
@@ -205,6 +231,8 @@ class SetLog {
             ? this.cardioDistanceKm
             : cardioDistanceKm as double?,
         prefilled: prefilled ?? this.prefilled,
+        adhoc: adhoc,
+        checkedAtMs: identical(checkedAtMs, _unset) ? this.checkedAtMs : checkedAtMs as int?,
         timestampMs: DateTime.now().millisecondsSinceEpoch,
       );
 
@@ -222,6 +250,8 @@ class SetLog {
         'cardio_seconds': cardioSeconds,
         'cardio_distance_km': cardioDistanceKm,
         'prefilled': prefilled ? 1 : 0,
+        'adhoc': adhoc ? 1 : 0,
+        'checked_at': checkedAtMs,
         'timestamp': timestampMs,
       };
 
@@ -239,6 +269,16 @@ class SetLog {
         cardioSeconds: (map['cardio_seconds'] as num?)?.toInt(),
         cardioDistanceKm: (map['cardio_distance_km'] as num?)?.toDouble(),
         prefilled: (map['prefilled'] as int?) == 1,
+        adhoc: (map['adhoc'] as int?) == 1,
+        checkedAtMs: (map['checked_at'] as num?)?.toInt(),
         timestampMs: map['timestamp'] as int,
       );
+}
+
+/// Whole seconds between ticking off one set and ticking off the next, or
+/// null if either wasn't timed (or the clock went backwards).
+int? restSecondsBetween(int? earlierCheckedAtMs, int? laterCheckedAtMs) {
+  if (earlierCheckedAtMs == null || laterCheckedAtMs == null) return null;
+  if (laterCheckedAtMs < earlierCheckedAtMs) return null;
+  return ((laterCheckedAtMs - earlierCheckedAtMs) / 1000).round();
 }

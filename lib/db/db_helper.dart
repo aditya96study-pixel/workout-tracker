@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -21,14 +22,22 @@ class DBHelper {
   DBHelper._internal();
   static final DBHelper instance = DBHelper._internal();
 
-  /// Bumped to 2 in the "complete workout / weekly history" release.
-  static const int schemaVersion = 2;
+  /// Bumped to 2 in the "complete workout / weekly history" release, and to 3
+  /// for exercises added on the day plus rest times between sets.
+  static const int schemaVersion = 3;
 
   Database? _db;
 
   Future<Database> get database async {
     _db ??= await _initDB();
     return _db!;
+  }
+
+  /// Closes and forgets the open database so a test can start fresh.
+  @visibleForTesting
+  Future<void> closeForTesting() async {
+    await _db?.close();
+    _db = null;
   }
 
   Future<Database> _initDB() async {
@@ -114,6 +123,8 @@ class DBHelper {
         cardio_seconds INTEGER,
         cardio_distance_km REAL,
         prefilled INTEGER NOT NULL DEFAULT 0,
+        adhoc INTEGER NOT NULL DEFAULT 0,
+        checked_at INTEGER,
         timestamp INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
         FOREIGN KEY (exercise_def_id) REFERENCES exercises (id) ON DELETE SET NULL
@@ -219,6 +230,12 @@ class DBHelper {
       final batch = db.batch();
       _createIndexes(batch);
       await batch.commit(noResult: true);
+    }
+    if (oldVersion < 3) {
+      // Both columns are additive. Existing rows read as routine rows with no
+      // recorded tick time, which simply means no rest time is shown for them.
+      await db.execute('ALTER TABLE set_logs ADD COLUMN adhoc INTEGER NOT NULL DEFAULT 0');
+      await db.execute('ALTER TABLE set_logs ADD COLUMN checked_at INTEGER');
     }
   }
 
@@ -491,7 +508,16 @@ class DBHelper {
         'auto_completed': 0,
       });
       for (final ex in exercises) {
-        await _insertSetLogs(txn, sessionId, ex, fills[ex.id] ?? const {}, 1, ex.targetSets);
+        await _insertSetLogs(
+          txn,
+          sessionId,
+          exerciseDefId: ex.id,
+          name: ex.name,
+          type: ex.type,
+          defaults: fills[ex.id] ?? const {},
+          fromIndex: 1,
+          toIndex: ex.targetSets,
+        );
       }
     });
     await _discardAbandonedDrafts(exceptId: sessionId);
@@ -517,16 +543,20 @@ class DBHelper {
   /// the Today screen can no longer render them, but they still count as
   /// "checked", which would pin the session in the `active` state and lock
   /// every day of the week with no reachable way to finish it.
+  ///
+  /// Exercises added on the day also have no `exercise_def_id`, but they are
+  /// flagged `adhoc` and the Today screen renders them, so they're left alone.
   Future<void> _reconcileExercises(WorkoutSession session, List<ExerciseDef> exercises) async {
     if (session.isCompleted || session.id == null) return;
     final db = await database;
 
     await db.delete('set_logs',
-        where: 'session_id = ? AND exercise_def_id IS NULL', whereArgs: [session.id]);
+        where: 'session_id = ? AND exercise_def_id IS NULL AND adhoc = 0',
+        whereArgs: [session.id]);
 
     final rows = await db.rawQuery(
       'SELECT exercise_def_id AS id, MAX(set_index) AS top, COUNT(*) AS n '
-      'FROM set_logs WHERE session_id = ? GROUP BY exercise_def_id',
+      'FROM set_logs WHERE session_id = ? AND adhoc = 0 GROUP BY exercise_def_id',
       [session.id],
     );
     final topBy = <int, int>{};
@@ -545,7 +575,16 @@ class DBHelper {
       final defaults = await _smartDefaultsFor(ex.name, ex.type);
       final from = (topBy[ex.id] ?? 0) + 1;
       final needed = ex.targetSets - existingCount;
-      await _insertSetLogs(db, session.id!, ex, defaults, from, from + needed - 1);
+      await _insertSetLogs(
+        db,
+        session.id!,
+        exerciseDefId: ex.id,
+        name: ex.name,
+        type: ex.type,
+        defaults: defaults,
+        fromIndex: from,
+        toIndex: from + needed - 1,
+      );
     }
 
     await recomputeSessionStatus(session.id!);
@@ -553,26 +592,29 @@ class DBHelper {
 
   Future<void> _insertSetLogs(
     DatabaseExecutor db,
-    int sessionId,
-    ExerciseDef ex,
-    Map<int, Map<String, Object?>> defaults,
-    int fromIndex,
-    int toIndex,
-  ) async {
+    int sessionId, {
+    required int? exerciseDefId,
+    required String name,
+    required TrackingType type,
+    required Map<int, Map<String, Object?>> defaults,
+    required int fromIndex,
+    required int toIndex,
+    bool adhoc = false,
+  }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     for (var s = fromIndex; s <= toIndex; s++) {
       // Only carry a row forward if a number relevant to *this* tracking type
       // actually came through. Otherwise the row is flagged pre-filled while
       // every box on screen is empty, and the UI promises carried-forward
       // values that aren't there.
-      final values = _relevantDefaults(_pickDefaultForSet(defaults, s), ex.type);
+      final values = _relevantDefaults(_pickDefaultForSet(defaults, s), type);
       final prefilled = values.isNotEmpty;
 
       await db.insert('set_logs', {
         'session_id': sessionId,
-        'exercise_def_id': ex.id,
-        'exercise_name': ex.name,
-        'type': ex.type.dbValue,
+        'exercise_def_id': exerciseDefId,
+        'exercise_name': name,
+        'type': type.dbValue,
         'set_index': s,
         'checked': 0,
         'weight_kg': values['weight_kg'],
@@ -581,6 +623,8 @@ class DBHelper {
         'cardio_seconds': values['cardio_seconds'],
         'cardio_distance_km': values['cardio_distance_km'],
         'prefilled': prefilled ? 1 : 0,
+        'adhoc': adhoc ? 1 : 0,
+        'checked_at': null,
         'timestamp': now,
       });
     }
@@ -614,8 +658,9 @@ class DBHelper {
 
   /// Deletes drafts the user walked away from without entering anything.
   ///
-  /// A draft where numbers were typed by hand is kept, so flicking between
-  /// days to check your plan never throws away work in progress.
+  /// A draft where numbers were typed by hand, or an exercise was added for
+  /// the day, is kept, so flicking between days to check your plan never
+  /// throws away work in progress.
   Future<void> _discardAbandonedDrafts({int? exceptId}) async {
     final db = await database;
     await db.rawDelete('''
@@ -625,6 +670,7 @@ class DBHelper {
         AND id NOT IN (
           SELECT DISTINCT session_id FROM set_logs
           WHERE checked = 1
+             OR adhoc = 1
              OR (prefilled = 0 AND (
                   weight_kg IS NOT NULL OR reps IS NOT NULL OR hold_seconds IS NOT NULL
                   OR cardio_seconds IS NOT NULL OR cardio_distance_km IS NOT NULL))
@@ -663,7 +709,7 @@ class DBHelper {
     // up here instead: a set with nothing in it wasn't performed, and letting
     // it through would put a blank row in history and a null in the charts.
     await db.rawUpdate('''
-      UPDATE set_logs SET checked = 0
+      UPDATE set_logs SET checked = 0, checked_at = NULL
       WHERE session_id = ? AND checked = 1 AND (
              (type = 'weights' AND (weight_kg IS NULL OR weight_kg <= 0
                                     OR reps IS NULL OR reps <= 0))
@@ -782,12 +828,135 @@ class DBHelper {
       cardioSeconds: template.cardioSeconds,
       cardioDistanceKm: template.cardioDistanceKm,
       prefilled: template.prefilled,
+      adhoc: template.adhoc,
     );
   }
 
   Future<void> deleteSetLog(int logId) async {
     final db = await database;
     await db.delete('set_logs', where: 'id = ?', whereArgs: [logId]);
+  }
+
+  // ---------------------------------------------------------------------
+  // Exercises added on the day
+  // ---------------------------------------------------------------------
+
+  /// Adds [name] to one workout only, without touching the routine. Its sets
+  /// are pre-filled from the last time it was done, like any other exercise,
+  /// and once ticked they count towards history and charts like any other.
+  Future<void> addAdhocExercise({
+    required int sessionId,
+    required String name,
+    required TrackingType type,
+    required int sets,
+  }) async {
+    final db = await database;
+    // Read before the transaction opens — a nested read deadlocks sqflite.
+    final defaults = await _smartDefaultsFor(name, type);
+    await db.transaction((txn) async {
+      await _insertSetLogs(
+        txn,
+        sessionId,
+        exerciseDefId: null,
+        name: name,
+        type: type,
+        defaults: defaults,
+        fromIndex: 1,
+        toIndex: sets,
+        adhoc: true,
+      );
+    });
+  }
+
+  /// Removes an exercise added on the day, and every set logged against it.
+  Future<void> deleteAdhocExercise({
+    required int sessionId,
+    required String name,
+    required TrackingType type,
+  }) async {
+    final db = await database;
+    await db.delete(
+      'set_logs',
+      where: 'session_id = ? AND adhoc = 1 AND exercise_name = ? AND type = ?',
+      whereArgs: [sessionId, name, type.dbValue],
+    );
+  }
+
+  /// The tracking type each known exercise name was last set up with, so
+  /// picking a familiar name when adding an exercise also picks its type —
+  /// a mismatched type would split that exercise's history in two.
+  ///
+  /// The routine's own definition wins over logged history, since that's the
+  /// one you most recently chose.
+  Future<Map<String, TrackingType>> getKnownExerciseTypes() async {
+    final db = await database;
+    final types = <String, TrackingType>{};
+    final logged = await db.rawQuery('''
+      SELECT exercise_name AS name, type, MAX(id) AS last
+      FROM set_logs GROUP BY exercise_name ORDER BY last ASC
+    ''');
+    for (final r in logged) {
+      types[r['name'] as String] = TrackingTypeX.fromDbValue(r['type'] as String);
+    }
+    final defined = await db.rawQuery('SELECT name, type FROM exercises ORDER BY id ASC');
+    for (final r in defined) {
+      types[r['name'] as String] = TrackingTypeX.fromDbValue(r['type'] as String);
+    }
+    return types;
+  }
+
+  // ---------------------------------------------------------------------
+  // Rest between sets
+  // ---------------------------------------------------------------------
+
+  /// The rest taken before each set the last time [exerciseName] was done,
+  /// keyed by the set's position: 2 is the rest between the first and second
+  /// sets, 3 between the second and third, and so on.
+  ///
+  /// Comes from the same workout the pre-filled weights and reps come from.
+  /// Sets that weren't timed (logged before this existed, or imported) are
+  /// simply missing from the map.
+  Future<Map<int, int>> getPreviousRestSeconds(String exerciseName, TrackingType type) async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT id, exercise_def_id, adhoc, set_index, checked_at
+      FROM set_logs
+      WHERE checked = 1
+        AND exercise_name = ?
+        AND type = ?
+        AND session_id = (
+          SELECT s.id FROM sessions s
+          JOIN set_logs l ON l.session_id = s.id
+          WHERE l.exercise_name = ? AND l.type = ? AND l.checked = 1
+            AND s.status = 'completed'
+          ORDER BY s.date DESC, s.created_at DESC
+          LIMIT 1
+        )
+      ORDER BY id ASC
+    ''', [exerciseName, type.dbValue, exerciseName, type.dbValue]);
+    if (rows.isEmpty) return const {};
+
+    // A lift programmed twice on one day leaves two runs of sets in the same
+    // workout; interleaving them would produce nonsense gaps, so only the
+    // first one is used.
+    String blockOf(Map<String, Object?> r) =>
+        (r['adhoc'] as int?) == 1 ? 'adhoc' : 'def:${r['exercise_def_id']}';
+    final first = blockOf(rows.first);
+    final sets = rows.where((r) => blockOf(r) == first).toList()
+      ..sort((a, b) {
+        final byIndex = (a['set_index'] as int).compareTo(b['set_index'] as int);
+        return byIndex != 0 ? byIndex : (a['id'] as int).compareTo(b['id'] as int);
+      });
+
+    final rest = <int, int>{};
+    for (var i = 1; i < sets.length; i++) {
+      final gap = restSecondsBetween(
+        (sets[i - 1]['checked_at'] as num?)?.toInt(),
+        (sets[i]['checked_at'] as num?)?.toInt(),
+      );
+      if (gap != null) rest[i + 1] = gap;
+    }
+    return rest;
   }
 
   // ---------------------------------------------------------------------
@@ -942,6 +1111,7 @@ class DBHelper {
         AND id NOT IN (
           SELECT DISTINCT session_id FROM set_logs
           WHERE checked = 1
+             OR adhoc = 1
              OR (prefilled = 0 AND (
                   weight_kg IS NOT NULL OR reps IS NOT NULL OR hold_seconds IS NOT NULL
                   OR cardio_seconds IS NOT NULL OR cardio_distance_km IS NOT NULL))
@@ -1179,6 +1349,8 @@ class DBHelper {
             'cardio_seconds': e.cardioSeconds,
             'cardio_distance_km': e.cardioDistanceKm,
             'prefilled': 0,
+            'adhoc': 0,
+            'checked_at': e.checkedAtMs,
             'timestamp': now,
           });
           sets++;

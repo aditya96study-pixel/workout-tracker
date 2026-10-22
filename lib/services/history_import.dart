@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../models/routine.dart';
+import 'time_format.dart';
 
 /// Thrown with a message the import screen shows verbatim.
 class HistoryImportException implements Exception {
@@ -21,6 +22,10 @@ class ImportedSet {
   final int? cardioSeconds;
   final double? cardioDistanceKm;
 
+  /// When the set was ticked off, if the source recorded it (backups do).
+  /// Keeps rest times between sets working after a restore.
+  final int? checkedAtMs;
+
   ImportedSet({
     required this.exerciseName,
     required this.type,
@@ -30,6 +35,7 @@ class ImportedSet {
     this.holdSeconds,
     this.cardioSeconds,
     this.cardioDistanceKm,
+    this.checkedAtMs,
   });
 }
 
@@ -94,6 +100,7 @@ Convert my workout log into the exact CSV format below. Rules:
     reps    - bodyweight count only -> fill "reps"
     time    - a timed hold          -> fill "seconds"
     cardio  - a run/ride            -> fill "seconds" and/or "distance" (km)
+  "seconds" can be whole seconds (90) or minutes:seconds (1:30).
 - Leave cells blank when they don't apply. Never invent numbers I didn't give.
 - Weight is in kilograms. Spell each exercise name identically every time.
 
@@ -173,6 +180,7 @@ ParsedHistory _parseBackupJson(String text) {
         holdSeconds: (l['hold_seconds'] as num?)?.toInt(),
         cardioSeconds: (l['cardio_seconds'] as num?)?.toInt(),
         cardioDistanceKm: (l['cardio_distance_km'] as num?)?.toDouble(),
+        checkedAtMs: (l['checked_at'] as num?)?.toInt(),
       ));
     }
     if (sets.isEmpty) continue;
@@ -271,7 +279,7 @@ ParsedHistory _parseHistoryCsv(String text) {
 
     final weight = _toDouble(cell(row, 'weight'));
     final reps = _toInt(cell(row, 'reps'));
-    final seconds = _toInt(cell(row, 'seconds'));
+    final seconds = parseDurationText(cell(row, 'seconds'));
     final distance = _toDouble(cell(row, 'distance'));
 
     final typeText = cell(row, 'type');

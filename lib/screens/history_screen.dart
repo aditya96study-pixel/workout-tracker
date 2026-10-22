@@ -7,6 +7,7 @@ import '../models/routine.dart';
 import '../models/week.dart';
 import '../models/workout_log.dart';
 import '../services/app_dates.dart';
+import '../services/time_format.dart';
 import 'exercise_chart_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
@@ -371,8 +372,10 @@ class _OutcomeChip extends StatelessWidget {
 class _ExerciseBlock {
   final int? defId;
   final String name;
+  final TrackingType type;
+  final bool adhoc;
   final List<SetLog> logs = [];
-  _ExerciseBlock(this.defId, this.name);
+  _ExerciseBlock(this.defId, this.name, this.type, {this.adhoc = false});
 }
 
 /// Splits a session's logs into one block per exercise.
@@ -382,11 +385,22 @@ class _ExerciseBlock {
 /// (ON DELETE SET NULL), and the fallback is a contiguous run of the same
 /// name — which still separates the two instances, because their rows were
 /// written consecutively.
+///
+/// An exercise added on the day has no routine id either, but is unique by
+/// name and type within its workout, so its sets are gathered together even
+/// when an extra set was added after another exercise.
 List<_ExerciseBlock> _groupIntoBlocks(List<SetLog> logs) {
   final blocks = <_ExerciseBlock>[];
   for (final log in logs) {
     _ExerciseBlock? target;
-    if (log.exerciseDefId != null) {
+    if (log.adhoc) {
+      for (final b in blocks) {
+        if (b.adhoc && b.name == log.exerciseName && b.type == log.type) {
+          target = b;
+          break;
+        }
+      }
+    } else if (log.exerciseDefId != null) {
       for (final b in blocks) {
         if (b.defId == log.exerciseDefId) {
           target = b;
@@ -395,11 +409,12 @@ List<_ExerciseBlock> _groupIntoBlocks(List<SetLog> logs) {
       }
     } else if (blocks.isNotEmpty &&
         blocks.last.defId == null &&
+        !blocks.last.adhoc &&
         blocks.last.name == log.exerciseName) {
       target = blocks.last;
     }
     if (target == null) {
-      target = _ExerciseBlock(log.exerciseDefId, log.exerciseName);
+      target = _ExerciseBlock(log.exerciseDefId, log.exerciseName, log.type, adhoc: log.adhoc);
       blocks.add(target);
     }
     target.logs.add(log);
@@ -443,9 +458,21 @@ class _SessionSheet extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(block.name,
-                            style: theme.textTheme.titleSmall
-                                ?.copyWith(fontWeight: FontWeight.w600)),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(block.name,
+                                  style: theme.textTheme.titleSmall
+                                      ?.copyWith(fontWeight: FontWeight.w600)),
+                            ),
+                            if (block.adhoc) ...[
+                              const SizedBox(width: 6),
+                              Text('added',
+                                  style: theme.textTheme.labelSmall
+                                      ?.copyWith(color: scheme.tertiary)),
+                            ],
+                          ],
+                        ),
                         const SizedBox(height: 4),
                         ...block.logs.map((log) => Padding(
                               padding: const EdgeInsets.symmetric(vertical: 1),
@@ -474,11 +501,11 @@ class _SessionSheet extends StatelessWidget {
       case TrackingType.reps:
         return log.reps != null ? '${log.reps} reps' : '—';
       case TrackingType.time:
-        return log.holdSeconds != null ? '${log.holdSeconds} sec' : '—';
+        return log.holdSeconds != null ? '${formatMinSec(log.holdSeconds!)} min' : '—';
       case TrackingType.cardio:
         final parts = <String>[];
         if (log.cardioSeconds != null) {
-          parts.add('${(log.cardioSeconds! / 60).toStringAsFixed(1)} min');
+          parts.add('${formatMinSec(log.cardioSeconds!)} min');
         }
         if (log.cardioDistanceKm != null) parts.add('${_num(log.cardioDistanceKm!)} km');
         return parts.isEmpty ? '—' : parts.join(' · ');
